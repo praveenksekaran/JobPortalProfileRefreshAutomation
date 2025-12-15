@@ -1,0 +1,115 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Job Portal Profile Refresh Automation - Serverless Application (Python)
+
+Parameters:
+  SecretName:
+    Type: String
+    Default: job-portal-credentials
+    Description: Name of the secret in AWS Secrets Manager containing portal credentials
+
+  NotificationEmail:
+    Type: String
+    Description: Email address for receiving execution notifications
+    AllowedPattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+
+  ScheduleExpression:
+    Type: String
+    Default: cron(0 9 * * ? *)
+    Description: CloudWatch Events schedule expression (default runs daily at 9 AM UTC)
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+    Description: Logging level for the Lambda function
+
+Resources:
+  # Lambda Function
+  ProfileRefreshFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: job-portal-profile-refresh
+      Description: Automates profile updates on LinkedIn, Naukri, and Indeed
+      Runtime: python3.11
+      CodeUri: ./
+      Handler: src.lambda_handler.lambda_handler
+      MemorySize: 1024
+      Timeout: 300
+      Environment:
+        Variables:
+          SECRET_NAME: !Ref SecretName
+          AWS_REGION: !Ref AWS::Region
+          LOG_LEVEL: !Ref LogLevel
+          FROM_EMAIL: !Ref NotificationEmail
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretName}*'
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0'
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  ses:FromAddress: !Ref NotificationEmail
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/job-portal-profile-refresh:*'
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref ScheduleExpression
+            Description: Scheduled trigger for profile refresh automation
+            Enabled: true
+      Layers:
+        - !Ref PlaywrightLayer
+
+  # Playwright Lambda Layer
+  PlaywrightLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: playwright-python
+      Description: Playwright for Python with Chromium browser
+      ContentUri: layers/playwright/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+
+  # CloudWatch Log Group
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProfileRefreshFunction}'
+      RetentionInDays: 30
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt ProfileRefreshFunction.Arn
+
+  FunctionName:
+    Description: Name of the Lambda function
+    Value: !Ref ProfileRefreshFunction
+
+  LogGroupName:
+    Description: CloudWatch Log Group name
+    Value: !Ref FunctionLogGroup
+
+  ScheduleExpression:
+    Description: Schedule expression for automated execution
+    Value: !Ref ScheduleExpression
